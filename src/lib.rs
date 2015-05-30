@@ -1,14 +1,18 @@
 #![feature(core)]
 extern crate core;
 
+use std::any::Any;
 use std::cell::Cell;
 use core::marker::PhantomData;
 use std::rc::Rc;
 use std::thread;
 use std::sync::{Arc, Mutex};
 
-trait Actor<T: Send> : Send + Sync {
-    fn receive(&self, t: T);
+trait Message: Any + Send + Sync {}
+impl<T: Any + Send + Sync> Message for T {}
+
+trait Actor : Send + Sync {
+    fn receive(&self, t: Box<Message>);
 }
 
 
@@ -16,22 +20,26 @@ trait DispatchedActor : Send + Sync {
     fn receiveNext(&self);
 }
 
-struct LiveActor<T: Send + Copy> {
-    actor: Box<Actor<T>>,
-    mailbox: Mutex<Option<T>>,
+struct LiveActor {
+    actor: Box<Actor>,
+    mailbox: Mutex<Option<Box<Message>>>,
 }
 
-impl<T: Send + Copy> LiveActor<T> {
+impl LiveActor {
 
-    fn new(actor: Box<Actor<T>>) -> Self {
+    fn new(actor: Box<Actor>) -> Self {
         LiveActor{actor: actor, mailbox: Mutex::new(None)}
     }
 
     fn receiveNext(&self) {
         let mut m = self.mailbox.lock().unwrap();
-        match *m {
-            Some(t) => {
-                self.actor.receive(t);
+        //let c: Option<Box<Message>> = *m.clone();
+        //.map(|t| self.actor.receive(t));
+        let mut c = &mut *m;
+        match *c {
+            Some(ref t) => {
+                let g = *t.clone();
+                self.actor.receive(g);
                 //self.mailbox.set(None);
                 *m = None;
             },
@@ -39,32 +47,32 @@ impl<T: Send + Copy> LiveActor<T> {
         }
     }
 
-    fn send(&self, t: T) {
+    fn send(&self, message: Box<Message>) {
         let mut b = self.mailbox.lock().unwrap();
-        *b = Some(t);
+        *b = Some(message);
     }
 
 }
 
 
-struct StoredActor<T: Send + Copy> {
-    live: Arc<LiveActor<T>>
+struct StoredActor {
+    live: Arc<LiveActor>
 }
     
 
-impl<T: Send + Copy> DispatchedActor for StoredActor<T> {
+impl DispatchedActor for StoredActor {
     fn receiveNext(&self) {
         self.live.receiveNext();
     }
 }
 
 #[derive(Clone)]
-struct ActorRef<T: Send + Copy> {
-    live: Arc<LiveActor<T>>,
+struct ActorRef {
+    live: Arc<LiveActor>,
 }
 
-impl<T: Send + Copy> ActorRef<T> {
-    fn send(&self, t: T) {
+impl ActorRef {
+    fn send(&self, t: Box<Message>) {
         self.live.send(t);
     }
 }
@@ -82,7 +90,7 @@ impl<'a> Dispatcher<'a> {
         Dispatcher{actors: Mutex::new(Vec::new()), _marker: PhantomData}
     }
 
-    fn add<T: 'static + Send + Copy>(&self, actor: Box<Actor<T>>) -> ActorRef<T> {
+    fn add(&self, actor: Box<Actor>) -> ActorRef {
         let live = Arc::new(LiveActor::new(actor));
         let stored = Box::new(StoredActor{live: live.clone()});
 
@@ -106,10 +114,10 @@ impl<'a> Dispatcher<'a> {
 #[test]
 fn test_actor() {
     struct MyActor(i32);
-    impl Actor<i32> for MyActor {
-        fn receive(&self, message: i32) {
+    impl Actor for MyActor {
+        fn receive(&self, message: Box<Message>) {
             let &MyActor(i) = self;
-            println!("{} got the message {}", i, message);
+            println!("{} got the message", i);
         }
     }
     let dispatcher = Arc::new(Dispatcher::new());
@@ -128,10 +136,10 @@ fn test_actor() {
     let act2 = dispatcher.add(actor2);
 
     println!("beginning send");
-    act.send(34);
+    act.send(Box::new(34));
 
-    act.send(23);
-    act2.send(99);
+    act.send(Box::new(23));
+    act2.send(Box::new(99));
     thread::sleep_ms(100);
 
 }
