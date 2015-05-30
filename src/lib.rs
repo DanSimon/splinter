@@ -8,11 +8,54 @@ use std::rc::Rc;
 use std::thread;
 use std::sync::{Arc, Mutex};
 
-trait Message: Any + Send + Sync {}
-impl<T: Any + Send + Sync> Message for T {}
+//TODO: This is way inefficient, implement an actual queue
+struct Queue<T> {
+    items: Vec<T>,
+}
+
+impl<T> Queue<T> {
+    
+    pub fn new() -> Self {
+        Queue{items: Vec::new()}
+    }
+
+    pub fn enqueue(&mut self, item: T) {
+        self.items.push(item);
+    }
+
+    pub fn dequeue(&mut self) -> Option<T> {
+        if self.items.len() > 0 {
+            Some(self.items.remove(0))
+        } else {
+            None
+        }
+    }
+}
+
+
+
+
+
+trait UntypedMessage: Send + Sync {
+    fn as_any<'a>(&'a self) -> &'a Any;
+}
+
+/// Because the Any type cannot be sent across threads, we need to wrap the actual message in a
+/// struct, send that, and then do the conversion to &Any afterwards
+struct Message<T: Send + Sync + Any> {
+    m: T
+}
+impl<T: Send + Sync + Any> UntypedMessage for Message<T> {
+
+    fn as_any<'a>(&'a self) -> &'a Any {
+        &self.m as &Any
+    }
+}
+
+
 
 trait Actor : Send + Sync {
-    fn receive(&self, t: &Message);
+    fn receive(&self, t: &Any);
 }
 
 
@@ -22,29 +65,28 @@ trait DispatchedActor : Send + Sync {
 
 struct LiveActor {
     actor: Box<Actor>,
-    mailbox: Mutex<Option<Box<Message>>>,
+    mailbox: Mutex<Queue<Box<UntypedMessage>>>,
 }
 
 impl LiveActor {
 
     fn new(actor: Box<Actor>) -> Self {
-        LiveActor{actor: actor, mailbox: Mutex::new(None)}
+        LiveActor{actor: actor, mailbox: Mutex::new(Queue::new())}
     }
 
     fn receiveNext(&self) {
         let mut m = self.mailbox.lock().unwrap();
-        *m = match *m {
+        match m.dequeue() {
             Some(ref t) => {
-                self.actor.receive(&*t);
-                None
+                self.actor.receive(t.as_any());
             },
-            None => None
-        }
+            None => {}
+        };
     }
 
-    fn send(&self, message: Box<Message>) {
+    fn send<T: Sync + Send + Any>(&self, message: T) {
         let mut b = self.mailbox.lock().unwrap();
-        *b = Some(message);
+        b.enqueue(Box::new(Message{m: message}));
     }
 
 }
@@ -67,7 +109,7 @@ struct ActorRef {
 }
 
 impl ActorRef {
-    fn send(&self, t: Box<Message>) {
+    fn send<T: Send + Sync + Any>(&self, t: T) {
         self.live.send(t);
     }
 }
@@ -106,19 +148,32 @@ impl<'a> Dispatcher<'a> {
 }
 
 
+macro_rules! receive {
+    ($ide:ident, $i:ident : $t:ty => $b:block, $($rest:tt)*) => { match $ide.downcast_ref::<$t>() {
+        Some($i) => $b,
+        None => receive!($ide, $($rest)*)
+    }};
+    ($ide:ident, $i:ident : $t:ty => $b:block) => { match $ide.downcast_ref::<$t>() {
+        Some($i) => $b,
+        None => {}
+    }}
+}
+
+
 #[test]
 fn test_actor() {
     struct MyActor(i32);
     impl Actor for MyActor {
-        fn receive(&self, message: &Message) {
+        fn receive(&self, message: &Any) {
             let &MyActor(i) = self;
-            let a = message as &Any;
-            match a.downcast_ref::<i32>() {
-                Some(num) => {
+            receive!(message,
+                num: i32 => {
                     println!("{} got the number {}", i, num);
                 },
-                None => {}
-            }
+                actor: ActorRef => {
+                    actor.send(555);
+                }
+            );
         }
     }
     let dispatcher = Arc::new(Dispatcher::new());
@@ -136,11 +191,11 @@ fn test_actor() {
     let actor2 = Box::new(MyActor(2));
     let act2 = dispatcher.add(actor2);
 
-    println!("beginning send");
-    act.send(Box::new(34));
+    for i in 0..10 {
+        act.send(i);
+    }
+    act.send(act2.clone());
 
-    act.send(Box::new(23));
-    act2.send(Box::new(99));
     thread::sleep_ms(100);
 
 }
