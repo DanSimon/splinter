@@ -1,0 +1,4 @@
+[package]
+name = "flak"
+version = "0.1.0"
+authors = ["Dan Simon <dan@tumblr.com>"]
