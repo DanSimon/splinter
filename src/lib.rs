@@ -8,7 +8,7 @@ use std::thread;
 use std::sync::{Arc, Mutex};
 
 trait Actor<T: Send> : Send + Sync {
-    fn receive(&self, t: T);
+    fn receive(&self, t: &T);
 }
 
 
@@ -16,12 +16,12 @@ trait DispatchedActor : Send + Sync {
     fn receiveNext(&self);
 }
 
-struct LiveActor<T: Send + Copy> {
+struct LiveActor<T: Send > {
     actor: Box<Actor<T>>,
     mailbox: Mutex<Option<T>>,
 }
 
-impl<T: Send + Copy> LiveActor<T> {
+impl<T: Send > LiveActor<T> {
 
     fn new(actor: Box<Actor<T>>) -> Self {
         LiveActor{actor: actor, mailbox: Mutex::new(None)}
@@ -29,13 +29,13 @@ impl<T: Send + Copy> LiveActor<T> {
 
     fn receiveNext(&self) {
         let mut m = self.mailbox.lock().unwrap();
-        match *m {
-            Some(t) => {
+        *m = match *m {
+            Some(ref t) => {
                 self.actor.receive(t);
                 //self.mailbox.set(None);
-                *m = None;
+                None
             },
-            None => {}
+            None => None
         }
     }
 
@@ -47,23 +47,23 @@ impl<T: Send + Copy> LiveActor<T> {
 }
 
 
-struct StoredActor<T: Send + Copy> {
+struct StoredActor<T: Send > {
     live: Arc<LiveActor<T>>
 }
     
 
-impl<T: Send + Copy> DispatchedActor for StoredActor<T> {
+impl<T: Send > DispatchedActor for StoredActor<T> {
     fn receiveNext(&self) {
         self.live.receiveNext();
     }
 }
 
 #[derive(Clone)]
-struct ActorRef<T: Send + Copy> {
+struct ActorRef<T: Send > {
     live: Arc<LiveActor<T>>,
 }
 
-impl<T: Send + Copy> ActorRef<T> {
+impl<T: Send > ActorRef<T> {
     fn send(&self, t: T) {
         self.live.send(t);
     }
@@ -82,7 +82,7 @@ impl<'a> Dispatcher<'a> {
         Dispatcher{actors: Mutex::new(Vec::new()), _marker: PhantomData}
     }
 
-    fn add<T: 'static + Send + Copy>(&self, actor: Box<Actor<T>>) -> ActorRef<T> {
+    fn add<T: 'static + Send >(&self, actor: Box<Actor<T>>) -> ActorRef<T> {
         let live = Arc::new(LiveActor::new(actor));
         let stored = Box::new(StoredActor{live: live.clone()});
 
@@ -102,12 +102,14 @@ impl<'a> Dispatcher<'a> {
 
 }
 
+trait Foo: Send + Sync  {}
+impl Foo for i32 {}
 
 #[test]
 fn test_actor() {
     struct MyActor(i32);
-    impl Actor<i32> for MyActor {
-        fn receive(&self, message: i32) {
+    impl Actor<Box<i32>> for MyActor {
+        fn receive(&self, message: &Box<i32>) {
             let &MyActor(i) = self;
             println!("{} got the message {}", i, message);
         }
@@ -128,10 +130,10 @@ fn test_actor() {
     let act2 = dispatcher.add(actor2);
 
     println!("beginning send");
-    act.send(34);
+    act.send(Box::new(34));
 
-    act.send(23);
-    act2.send(99);
+    act.send(Box::new(23));
+    //act2.send(99);
     thread::sleep_ms(100);
 
 }
