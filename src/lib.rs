@@ -12,7 +12,7 @@ trait Message: Any + Send + Sync {}
 impl<T: Any + Send + Sync> Message for T {}
 
 trait Actor : Send + Sync {
-    fn receive(&self, t: Box<Message>);
+    fn receive(&self, t: &Message);
 }
 
 
@@ -33,17 +33,12 @@ impl LiveActor {
 
     fn receiveNext(&self) {
         let mut m = self.mailbox.lock().unwrap();
-        //let c: Option<Box<Message>> = *m.clone();
-        //.map(|t| self.actor.receive(t));
-        let mut c = &mut *m;
-        match *c {
+        *m = match *m {
             Some(ref t) => {
-                let g = *t.clone();
-                self.actor.receive(g);
-                //self.mailbox.set(None);
-                *m = None;
+                self.actor.receive(&*t);
+                None
             },
-            None => {}
+            None => None
         }
     }
 
@@ -115,9 +110,15 @@ impl<'a> Dispatcher<'a> {
 fn test_actor() {
     struct MyActor(i32);
     impl Actor for MyActor {
-        fn receive(&self, message: Box<Message>) {
+        fn receive(&self, message: &Message) {
             let &MyActor(i) = self;
-            println!("{} got the message", i);
+            let a = message as &Any;
+            match a.downcast_ref::<i32>() {
+                Some(num) => {
+                    println!("{} got the number {}", i, num);
+                },
+                None => {}
+            }
         }
     }
     let dispatcher = Arc::new(Dispatcher::new());
