@@ -9,7 +9,7 @@ use std::thread;
 use std::sync::{Arc, Mutex};
 
 //TODO: This is way inefficient, implement an actual queue
-struct Queue<T> {
+pub struct Queue<T> {
     items: Vec<T>,
 }
 
