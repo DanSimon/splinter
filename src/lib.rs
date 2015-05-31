@@ -54,7 +54,7 @@ impl<T: Send + Sync + Any> UntypedMessage for Message<T> {
 
 
 
-trait Actor : Send + Sync {
+pub trait Actor : Send + Sync {
     fn receive(&self, t: &Any);
 }
 
@@ -107,18 +107,18 @@ impl DispatchedActor for StoredActor {
 }
 
 #[derive(Clone)]
-struct ActorRef {
+pub struct ActorRef {
     live: Arc<LiveActor>,
 }
 
 impl ActorRef {
-    fn send<T: Send + Sync + Any>(&self, t: T) {
+    pub fn send<T: Send + Sync + Any>(&self, t: T) {
         self.live.send(t);
     }
 }
 
 
-struct Dispatcher<'a> {
+pub struct Dispatcher<'a> {
     actors: Mutex<Vec<Box<DispatchedActor>>>,
     _marker: PhantomData<&'a DispatchedActor>
 }
@@ -126,11 +126,11 @@ struct Dispatcher<'a> {
 
 impl<'a> Dispatcher<'a> {
 
-    fn new() -> Self {
+    pub fn new() -> Self {
         Dispatcher{actors: Mutex::new(Vec::new()), _marker: PhantomData}
     }
 
-    fn add(&self, actor: Box<Actor>) -> ActorRef {
+    pub fn add(&self, actor: Box<Actor>) -> ActorRef {
         let live = Arc::new(LiveActor::new(actor));
         let stored = Box::new(StoredActor{live: live.clone()});
 
@@ -140,7 +140,7 @@ impl<'a> Dispatcher<'a> {
         ActorRef{live: live}    
     }
 
-    fn dispatch(&self) {
+    pub fn dispatch(&self) {
         let actors = self.actors.lock().unwrap();
         for actor in actors.iter() {
             actor.receive_next();
@@ -153,6 +153,7 @@ impl<'a> Dispatcher<'a> {
 trait Foo: Send + Sync  {}
 impl Foo for i32 {}
 
+#[macro_export]
 macro_rules! receive {
     ($ide:ident, $i:ident : $t:ty => $b:block, $($rest:tt)*) => { match $ide.downcast_ref::<$t>() {
         Some($i) => $b,
