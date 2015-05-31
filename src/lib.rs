@@ -60,7 +60,7 @@ trait Actor : Send + Sync {
 
 
 trait DispatchedActor : Send + Sync {
-    fn receiveNext(&self);
+    fn receive_next(&self);
 }
 
 struct LiveActor {
@@ -74,9 +74,12 @@ impl LiveActor {
         LiveActor{actor: actor, mailbox: Mutex::new(Queue::new())}
     }
 
-    fn receiveNext(&self) {
-        let mut m = self.mailbox.lock().unwrap();
-        match m.dequeue() {
+    fn receive_next(&self) {
+        let next = {
+            let mut m = self.mailbox.lock().unwrap();
+            m.dequeue()
+        };
+        match next {
             Some(ref t) => {
                 self.actor.receive(t.as_any());
             },
@@ -98,8 +101,8 @@ struct StoredActor {
     
 
 impl DispatchedActor for StoredActor {
-    fn receiveNext(&self) {
-        self.live.receiveNext();
+    fn receive_next(&self) {
+        self.live.receive_next();
     }
 }
 
@@ -140,7 +143,7 @@ impl<'a> Dispatcher<'a> {
     fn dispatch(&self) {
         let actors = self.actors.lock().unwrap();
         for actor in actors.iter() {
-            actor.receiveNext();
+            actor.receive_next();
         }
     }
 
@@ -159,6 +162,7 @@ macro_rules! receive {
     }}
 }
 
+struct Ping(ActorRef, i32);
 
 #[test]
 fn test_actor() {
@@ -167,16 +171,21 @@ fn test_actor() {
         fn receive(&self, message: &Any) {
             let &MyActor(i) = self;
             receive!(message,
-                num: i32 => {
-                    println!("{} got the number {}", i, num);
-                },
-                actor: ActorRef => {
-                    actor.send(555);
+                p: Ping => {
+                    let &Ping(ref sender, ref num) = p;
+                    //let q: Ping = p;
+                    //let Ping(sender, num) = q;
+                    if *num == 500000 {
+                        println!("done");
+                    } else {
+                        sender.send(Ping(sender.clone(), num + 1));
+                    }
                 }
             );
         }
     }
     let dispatcher = Arc::new(Dispatcher::new());
+    /*
     let dispatcher2 = dispatcher.clone();
     let handle = thread::spawn(move || {
         loop {
@@ -185,6 +194,7 @@ fn test_actor() {
             //thread::sleep_ms(2);
         }
     });
+    */
     let actor = Box::new(MyActor(3));
     let act = dispatcher.add(actor);
 
@@ -194,12 +204,20 @@ fn test_actor() {
     for i in 0..10 {
         act.send(i);
     }
-    act.send(act2.clone());
+    act.send(Ping(act2.clone(), 0));
+    act2.send(act.clone());
 
-    thread::sleep_ms(100);
+    println!("start");
+    let mut m = Mutex::new(Queue::new());
+        let mut q = m.lock().unwrap();
+    for i in 0..5000000 {
+        q.enqueue(act.clone());
+        q.dequeue();
+    }
+    println!("end");
+
+
+    thread::sleep_ms(1000);
 
 }
 
-#[test]
-fn it_works() {
-}
