@@ -165,10 +165,10 @@ macro_rules! receive {
     }}
 }
 
-struct Ping(ActorRef, i32);
 
 #[test]
 fn test_actor() {
+    struct Ping(ActorRef, i32);
     struct MyActor(i32);
     impl Actor for MyActor {
         fn receive(&self, message: &Any) {
