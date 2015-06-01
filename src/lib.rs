@@ -43,16 +43,16 @@ impl<T> Queue<T> {
 
 
 
-trait UntypedMessage {
+trait UntypedMessage : Send + Sync{
     fn as_any<'a>(&'a self) -> &'a Any;
 }
 
 /// Because the Any type cannot be sent across threads, we need to wrap the actual message in a
 /// struct, send that, and then do the conversion to &Any afterwards
-struct Message<T: Any> {
+struct Message<T: Send + Sync + Any> {
     m: T
 }
-impl<T: Any> UntypedMessage for Message<T> {
+impl<T: Send + Sync + Any> UntypedMessage for Message<T> {
 
     fn as_any<'a>(&'a self) -> &'a Any {
         &self.m as &Any
@@ -61,7 +61,7 @@ impl<T: Any> UntypedMessage for Message<T> {
 
 
 
-pub trait Actor {
+pub trait Actor: Send + Sync {
     fn receive(&self, t: &Any);
 }
 
@@ -87,7 +87,7 @@ impl LiveActor {
         };
     }
 
-    fn send<T: Any>(&mut self, message: T) {
+    fn send<T: Send + Sync + Any>(&mut self, message: T) {
         self.mailbox.enqueue(Box::new(Message{m: message}));
     }
 
@@ -98,11 +98,11 @@ struct ActorMessage(ActorId, Box<UntypedMessage>);
 #[derive(Clone)]
 pub struct ActorRef {
     id: ActorId,
-    channel: Sender<ActorMessage>,
+    channel: Arc<Sender<ActorMessage>>,
 }
 
 impl ActorRef {
-    pub fn send<T: Any>(&self, t: T) {
+    pub fn send<T: Send + Sync + Any>(&self, t: T) {
         self.channel.send(ActorMessage(self.id, Box::new(Message{m: t})));
     }
 }
@@ -149,7 +149,7 @@ impl Dispatcher {
 
         actors.actors.insert(id, live);
 
-        ActorRef{id: id, channel: self.orig_sender.clone()}    
+        ActorRef{id: id, channel: Arc::new(self.orig_sender.clone())}    
     }
 
     pub fn dispatch(&self) {
@@ -198,7 +198,7 @@ fn test_actor() {
                     let &Ping(ref sender, ref num) = p;
                     //let q: Ping = p;
                     //let Ping(sender, num) = q;
-                    if *num == 500000 {
+                    if *num == 5000 {
                         println!("done");
                     } else {
                         sender.send(Ping(sender.clone(), num + 1));
@@ -208,7 +208,6 @@ fn test_actor() {
         }
     }
     let mut dispatcher = Arc::new(Dispatcher::new());
-    /*
     let dispatcher2 = dispatcher.clone();
     let handle = thread::spawn(move || {
         loop {
@@ -217,7 +216,6 @@ fn test_actor() {
             //thread::sleep_ms(2);
         }
     });
-    */
     let actor = Box::new(MyActor(3));
     let act = dispatcher.add(actor);
 
@@ -229,16 +227,6 @@ fn test_actor() {
     }
     act.send(Ping(act2.clone(), 0));
     act2.send(act.clone());
-
-    println!("start");
-    let mut m = Mutex::new(Queue::new());
-        let mut q = m.lock().unwrap();
-    for i in 0..5000000 {
-        q.enqueue(act.clone());
-        q.dequeue();
-    }
-    println!("end");
-
 
     thread::sleep_ms(1000);
 
