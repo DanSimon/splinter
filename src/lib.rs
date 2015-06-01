@@ -43,16 +43,16 @@ impl<T> Queue<T> {
 
 
 
-trait UntypedMessage : Send + Sync{
+trait UntypedMessage : Send {
     fn as_any<'a>(&'a self) -> &'a Any;
 }
 
 /// Because the Any type cannot be sent across threads, we need to wrap the actual message in a
 /// struct, send that, and then do the conversion to &Any afterwards
-struct Message<T: Send + Sync + Any> {
+struct Message<T: Send  + Any> {
     m: T
 }
-impl<T: Send + Sync + Any> UntypedMessage for Message<T> {
+impl<T: Send  + Any> UntypedMessage for Message<T> {
 
     fn as_any<'a>(&'a self) -> &'a Any {
         &self.m as &Any
@@ -61,7 +61,7 @@ impl<T: Send + Sync + Any> UntypedMessage for Message<T> {
 
 
 
-pub trait Actor: Send + Sync {
+pub trait Actor: Send  {
     fn receive(&self, t: &Any);
 }
 
@@ -87,40 +87,53 @@ impl LiveActor {
         };
     }
 
-    fn send<T: Send + Sync + Any>(&mut self, message: T) {
-        self.mailbox.enqueue(Box::new(Message{m: message}));
+    fn enqueue(&mut self, message: Box<UntypedMessage>) {
+        self.mailbox.enqueue(message);
     }
 
 }
 
 struct ActorMessage(ActorId, Box<UntypedMessage>);
 
-#[derive(Clone)]
 pub struct ActorRef {
     id: ActorId,
-    channel: Arc<Sender<ActorMessage>>,
+    channel: Mutex<Sender<ActorMessage>>,
 }
 
 impl ActorRef {
-    pub fn send<T: Send + Sync + Any>(&self, t: T) {
-        self.channel.send(ActorMessage(self.id, Box::new(Message{m: t})));
+    pub fn send<T: Send  + Any>(&self, t: T) {
+        let ch = self.channel.lock().unwrap();
+        ch.send(ActorMessage(self.id, Box::new(Message{m: t})));
+    }
+}
+impl Clone for ActorRef {
+
+    fn clone(&self) -> Self {
+        let ch = self.channel.lock().unwrap();
+        ActorRef{id: self.id, channel: Mutex::new(ch.clone())}
     }
 }
 
 
 pub struct Dispatcher {
     actors: Mutex<Actors>,
-    orig_sender: Sender<ActorMessage>,
-    receiver: Receiver<ActorMessage>
 }
 
 struct Actors {
     next_actor_id: ActorId,
     pub actors: HashMap<ActorId, LiveActor, RandomState>,
+    sender: Sender<ActorMessage>,
+    receiver: Receiver<ActorMessage>
 }
 impl Actors {
     pub fn new() -> Self {
-        Actors{next_actor_id: 1, actors: HashMap::new()}
+        let (s,r) = channel::<ActorMessage>();
+        Actors{
+            next_actor_id: 1, 
+            actors: HashMap::new(),
+            sender: s,
+            receiver: r,
+        }
     }
     pub fn next_id(&mut self) -> ActorId {
         let n = self.next_actor_id;
@@ -134,11 +147,8 @@ impl Dispatcher {
 
 
     pub fn new() -> Self {
-        let (s,r) = channel::<ActorMessage>();
         Dispatcher{
             actors: Mutex::new(Actors::new()), 
-            orig_sender: s,
-            receiver: r,
         }
     }
 
@@ -149,18 +159,18 @@ impl Dispatcher {
 
         actors.actors.insert(id, live);
 
-        ActorRef{id: id, channel: Arc::new(self.orig_sender.clone())}    
+        ActorRef{id: id, channel: Mutex::new(actors.sender.clone())}    
     }
 
     pub fn dispatch(&self) {
         let mut actors = self.actors.lock().unwrap();
-        let mut r = self.receiver.try_recv();
+        let mut r = actors.receiver.try_recv();
         while r.is_ok() {
             let ActorMessage(id, m) = r.unwrap();
             if let Some(live) = actors.actors.get_mut(&id) {
-                live.send(m);
+                live.enqueue(m);
             }
-            r = self.receiver.try_recv();
+            r = actors.receiver.try_recv();
         }
         for (id ,actor) in actors.actors.iter_mut() {
             actor.receive_next();
@@ -194,11 +204,14 @@ fn test_actor() {
         fn receive(&self, message: &Any) {
             let &MyActor(i) = self;
             receive!(message,
+                num: i32 => {
+                    println!("got {}", num);
+                },
                 p: Ping => {
                     let &Ping(ref sender, ref num) = p;
                     //let q: Ping = p;
                     //let Ping(sender, num) = q;
-                    if *num == 5000 {
+                    if *num == 500000 {
                         println!("done");
                     } else {
                         sender.send(Ping(sender.clone(), num + 1));
