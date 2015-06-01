@@ -4,7 +4,7 @@ extern crate core;
 
 use std::any::Any;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{VecDeque, HashMap};
 use std::collections::hash_map::RandomState;
 use core::marker::PhantomData;
 use std::rc::Rc;
@@ -14,34 +14,6 @@ use std::sync::mpsc::{channel, Sender, Receiver};
 
 
 type ActorId = u64;
-
-//TODO: This is way inefficient, implement an actual queue
-pub struct Queue<T> {
-    items: Vec<T>,
-}
-
-impl<T> Queue<T> {
-    
-    pub fn new() -> Self {
-        Queue{items: Vec::new()}
-    }
-
-    pub fn enqueue(&mut self, item: T) {
-        self.items.push(item);
-    }
-
-    pub fn dequeue(&mut self) -> Option<T> {
-        if self.items.len() > 0 {
-            Some(self.items.remove(0))
-        } else {
-            None
-        }
-    }
-}
-
-
-
-
 
 trait UntypedMessage : Send {
     fn as_any<'a>(&'a self) -> &'a Any;
@@ -68,17 +40,17 @@ pub trait Actor: Send  {
 
 struct LiveActor {
     actor: Box<Actor>,
-    mailbox: Queue<Box<UntypedMessage>>,
+    mailbox: VecDeque<Box<UntypedMessage>>,
 }
 
 impl LiveActor {
 
     fn new(actor: Box<Actor>) -> Self {
-        LiveActor{actor: actor, mailbox: Queue::new()}
+        LiveActor{actor: actor, mailbox: VecDeque::new()}
     }
 
     fn receive_next(&mut self) {
-        let next = self.mailbox.dequeue();
+        let next = self.mailbox.pop_back();
         match next {
             Some(ref t) => {
                 self.actor.receive(t.as_any());
@@ -88,7 +60,7 @@ impl LiveActor {
     }
 
     fn enqueue(&mut self, message: Box<UntypedMessage>) {
-        self.mailbox.enqueue(message);
+        self.mailbox.push_front(message);
     }
 
 }
