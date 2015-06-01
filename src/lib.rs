@@ -1,12 +1,19 @@
 #![feature(core)]
+#![feature(std_misc)]
 extern crate core;
 
 use std::any::Any;
 use std::cell::Cell;
+use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
 use core::marker::PhantomData;
 use std::rc::Rc;
 use std::thread;
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{channel, Sender, Receiver};
+
+
+type ActorId = u64;
 
 //TODO: This is way inefficient, implement an actual queue
 pub struct Queue<T> {
@@ -36,16 +43,16 @@ impl<T> Queue<T> {
 
 
 
-trait UntypedMessage: Send + Sync {
+trait UntypedMessage {
     fn as_any<'a>(&'a self) -> &'a Any;
 }
 
 /// Because the Any type cannot be sent across threads, we need to wrap the actual message in a
 /// struct, send that, and then do the conversion to &Any afterwards
-struct Message<T: Send + Sync + Any> {
+struct Message<T: Any> {
     m: T
 }
-impl<T: Send + Sync + Any> UntypedMessage for Message<T> {
+impl<T: Any> UntypedMessage for Message<T> {
 
     fn as_any<'a>(&'a self) -> &'a Any {
         &self.m as &Any
@@ -54,31 +61,24 @@ impl<T: Send + Sync + Any> UntypedMessage for Message<T> {
 
 
 
-pub trait Actor : Send + Sync {
+pub trait Actor {
     fn receive(&self, t: &Any);
 }
 
 
-trait DispatchedActor : Send + Sync {
-    fn receive_next(&self);
-}
-
 struct LiveActor {
     actor: Box<Actor>,
-    mailbox: Mutex<Queue<Box<UntypedMessage>>>,
+    mailbox: Queue<Box<UntypedMessage>>,
 }
 
 impl LiveActor {
 
     fn new(actor: Box<Actor>) -> Self {
-        LiveActor{actor: actor, mailbox: Mutex::new(Queue::new())}
+        LiveActor{actor: actor, mailbox: Queue::new()}
     }
 
-    fn receive_next(&self) {
-        let next = {
-            let mut m = self.mailbox.lock().unwrap();
-            m.dequeue()
-        };
+    fn receive_next(&mut self) {
+        let next = self.mailbox.dequeue();
         match next {
             Some(ref t) => {
                 self.actor.receive(t.as_any());
@@ -87,62 +87,82 @@ impl LiveActor {
         };
     }
 
-    fn send<T: Sync + Send + Any>(&self, message: T) {
-        let mut b = self.mailbox.lock().unwrap();
-        b.enqueue(Box::new(Message{m: message}));
+    fn send<T: Any>(&mut self, message: T) {
+        self.mailbox.enqueue(Box::new(Message{m: message}));
     }
 
 }
 
-
-struct StoredActor {
-    live: Arc<LiveActor>
-}
-    
-
-impl DispatchedActor for StoredActor {
-    fn receive_next(&self) {
-        self.live.receive_next();
-    }
-}
+struct ActorMessage(ActorId, Box<UntypedMessage>);
 
 #[derive(Clone)]
 pub struct ActorRef {
-    live: Arc<LiveActor>,
+    id: ActorId,
+    channel: Sender<ActorMessage>,
 }
 
 impl ActorRef {
-    pub fn send<T: Send + Sync + Any>(&self, t: T) {
-        self.live.send(t);
+    pub fn send<T: Any>(&self, t: T) {
+        self.channel.send(ActorMessage(self.id, Box::new(Message{m: t})));
     }
 }
 
 
-pub struct Dispatcher<'a> {
-    actors: Mutex<Vec<Box<DispatchedActor>>>,
-    _marker: PhantomData<&'a DispatchedActor>
+pub struct Dispatcher {
+    actors: Mutex<Actors>,
+    orig_sender: Sender<ActorMessage>,
+    receiver: Receiver<ActorMessage>
 }
 
+struct Actors {
+    next_actor_id: ActorId,
+    pub actors: HashMap<ActorId, LiveActor, RandomState>,
+}
+impl Actors {
+    pub fn new() -> Self {
+        Actors{next_actor_id: 1, actors: HashMap::new()}
+    }
+    pub fn next_id(&mut self) -> ActorId {
+        let n = self.next_actor_id;
+        self.next_actor_id += 1;
+        n
+    }
 
-impl<'a> Dispatcher<'a> {
+}
+
+impl Dispatcher {
+
 
     pub fn new() -> Self {
-        Dispatcher{actors: Mutex::new(Vec::new()), _marker: PhantomData}
+        let (s,r) = channel::<ActorMessage>();
+        Dispatcher{
+            actors: Mutex::new(Actors::new()), 
+            orig_sender: s,
+            receiver: r,
+        }
     }
 
     pub fn add(&self, actor: Box<Actor>) -> ActorRef {
-        let live = Arc::new(LiveActor::new(actor));
-        let stored = Box::new(StoredActor{live: live.clone()});
-
         let mut actors = self.actors.lock().unwrap();
-        actors.push(stored as Box<DispatchedActor>);
+        let id = actors.next_id();
+        let live = LiveActor::new(actor);
 
-        ActorRef{live: live}    
+        actors.actors.insert(id, live);
+
+        ActorRef{id: id, channel: self.orig_sender.clone()}    
     }
 
     pub fn dispatch(&self) {
-        let actors = self.actors.lock().unwrap();
-        for actor in actors.iter() {
+        let mut actors = self.actors.lock().unwrap();
+        let mut r = self.receiver.try_recv();
+        while r.is_ok() {
+            let ActorMessage(id, m) = r.unwrap();
+            if let Some(live) = actors.actors.get_mut(&id) {
+                live.send(m);
+            }
+            r = self.receiver.try_recv();
+        }
+        for (id ,actor) in actors.actors.iter_mut() {
             actor.receive_next();
         }
     }
@@ -150,7 +170,7 @@ impl<'a> Dispatcher<'a> {
 
 }
 
-trait Foo: Send + Sync  {}
+trait Foo: Send {}
 impl Foo for i32 {}
 
 #[macro_export]
@@ -187,7 +207,7 @@ fn test_actor() {
             );
         }
     }
-    let dispatcher = Arc::new(Dispatcher::new());
+    let mut dispatcher = Arc::new(Dispatcher::new());
     /*
     let dispatcher2 = dispatcher.clone();
     let handle = thread::spawn(move || {
