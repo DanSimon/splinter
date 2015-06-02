@@ -69,20 +69,20 @@ struct ActorMessage(ActorId, Box<UntypedMessage>);
 
 pub struct ActorRef {
     id: ActorId,
-    channel: Mutex<Sender<ActorMessage>>,
+    channel: Sender<ActorMessage>,
 }
 
 impl ActorRef {
     pub fn send<T: Send  + Any>(&self, t: T) {
-        let ch = self.channel.lock().unwrap();
-        ch.send(ActorMessage(self.id, Box::new(Message{m: t})));
+        //let ch = self.channel.lock().unwrap();
+        self.channel.send(ActorMessage(self.id, Box::new(Message{m: t})));
     }
 }
 impl Clone for ActorRef {
 
     fn clone(&self) -> Self {
-        let ch = self.channel.lock().unwrap();
-        ActorRef{id: self.id, channel: Mutex::new(ch.clone())}
+        //let ch = self.channel.lock().unwrap();
+        ActorRef{id: self.id, channel: self.channel.clone()}
     }
 }
 
@@ -131,7 +131,7 @@ impl Dispatcher {
 
         actors.actors.insert(id, live);
 
-        ActorRef{id: id, channel: Mutex::new(actors.sender.clone())}    
+        ActorRef{id: id, channel: actors.sender.clone()}    
     }
 
     pub fn dispatch(&self) {
