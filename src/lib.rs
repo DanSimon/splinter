@@ -1,15 +1,10 @@
-#![feature(core)]
 #![feature(std_misc)]
-extern crate core;
 
 use std::any::Any;
-use std::cell::Cell;
 use std::collections::{VecDeque, HashMap};
 use std::collections::hash_map::RandomState;
-use core::marker::PhantomData;
-use std::rc::Rc;
 use std::thread;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::sync::mpsc::{channel, Sender, Receiver};
 
 
@@ -154,7 +149,7 @@ impl Dispatcher {
                 }
                 r = self.receiver.try_recv();
             }
-            for (id ,actor) in self.actors.iter_mut() {
+            for (_ ,actor) in self.actors.iter_mut() {
                 actor.receive_next();
             }
         }
@@ -185,7 +180,6 @@ fn test_actor() {
     struct MyActor(i32);
     impl Actor for MyActor {
         fn receive(&self, message: &Any) {
-            let &MyActor(i) = self;
             receive!(message,
                 num: i32 => {
                     println!("got {}", num);
