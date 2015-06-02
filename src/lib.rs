@@ -65,19 +65,18 @@ impl LiveActor {
 
 }
 
-struct ActorMessage(ActorId, Box<UntypedMessage>);
-
 pub struct ActorRef {
     id: ActorId,
-    channel: Sender<ActorMessage>,
+    channel: Sender<DispatcherMessage>,
 }
 
 impl ActorRef {
     pub fn send<T: Send  + Any>(&self, t: T) {
         //let ch = self.channel.lock().unwrap();
-        self.channel.send(ActorMessage(self.id, Box::new(Message{m: t})));
+        self.channel.send(DispatcherMessage::ActorMessage(self.id, Box::new(Message{m: t})));
     }
 }
+
 impl Clone for ActorRef {
 
     fn clone(&self) -> Self {
@@ -86,66 +85,78 @@ impl Clone for ActorRef {
     }
 }
 
+enum DispatcherMessage {
+    ActorMessage(ActorId, Box<UntypedMessage>),
+    AddActor(ActorId, Box<Actor>),
+    Shutdown,
+}
+
+pub struct ActorSystem {
+    next_actor_id: Mutex<ActorId>,
+    channel: Sender<DispatcherMessage>,
+}
+impl ActorSystem {
+
+    pub fn create() -> (ActorSystem, Dispatcher) {
+        let (s,r) = channel();
+        let system = ActorSystem::new(s);
+        let dispatcher = Dispatcher::new(r);
+        (system, dispatcher)
+    }
+
+    fn new(channel: Sender<DispatcherMessage>) -> Self {
+        ActorSystem{next_actor_id: Mutex::new(1), channel: channel}
+    }
+
+    pub fn add(&self, actor: Box<Actor>) -> ActorRef {
+        let mut next_id = self.next_actor_id.lock().unwrap();
+        let id = *next_id;
+        *next_id += 1;
+        self.channel.send(DispatcherMessage::AddActor(id, actor));
+        ActorRef{id: id, channel: self.channel.clone()}
+    }
+}
 
 pub struct Dispatcher {
-    actors: Mutex<Actors>,
-}
-
-struct Actors {
-    next_actor_id: ActorId,
-    pub actors: HashMap<ActorId, LiveActor, RandomState>,
-    sender: Sender<ActorMessage>,
-    receiver: Receiver<ActorMessage>
-}
-impl Actors {
-    pub fn new() -> Self {
-        let (s,r) = channel::<ActorMessage>();
-        Actors{
-            next_actor_id: 1, 
-            actors: HashMap::new(),
-            sender: s,
-            receiver: r,
-        }
-    }
-    pub fn next_id(&mut self) -> ActorId {
-        let n = self.next_actor_id;
-        self.next_actor_id += 1;
-        n
-    }
-
+    receiver: Receiver<DispatcherMessage>,
+    actors: HashMap<ActorId, LiveActor, RandomState>,
 }
 
 impl Dispatcher {
 
 
-    pub fn new() -> Self {
+    fn new(receiver: Receiver<DispatcherMessage>) -> Self {
         Dispatcher{
-            actors: Mutex::new(Actors::new()), 
+            receiver: receiver,
+            actors: HashMap::new()
         }
     }
 
-    pub fn add(&self, actor: Box<Actor>) -> ActorRef {
-        let mut actors = self.actors.lock().unwrap();
-        let id = actors.next_id();
-        let live = LiveActor::new(actor);
 
-        actors.actors.insert(id, live);
-
-        ActorRef{id: id, channel: actors.sender.clone()}    
-    }
-
-    pub fn dispatch(&self) {
-        let mut actors = self.actors.lock().unwrap();
-        let mut r = actors.receiver.try_recv();
-        while r.is_ok() {
-            let ActorMessage(id, m) = r.unwrap();
-            if let Some(live) = actors.actors.get_mut(&id) {
-                live.enqueue(m);
+    pub fn dispatch(&mut self) {
+        loop {
+            let mut r = self.receiver.try_recv();
+            while r.is_ok() {
+                let message = r.unwrap();
+                match message {
+                    DispatcherMessage::ActorMessage(id, m) => {
+                        if let Some(live) = self.actors.get_mut(&id) {
+                            live.enqueue(m);
+                        }
+                    },
+                    DispatcherMessage::AddActor(id, actor) => {
+                        let live = LiveActor::new(actor);
+                        self.actors.insert(id, live);
+                    },
+                    DispatcherMessage::Shutdown => {
+                        return;
+                    }
+                }
+                r = self.receiver.try_recv();
             }
-            r = actors.receiver.try_recv();
-        }
-        for (id ,actor) in actors.actors.iter_mut() {
-            actor.receive_next();
+            for (id ,actor) in self.actors.iter_mut() {
+                actor.receive_next();
+            }
         }
     }
 
@@ -192,20 +203,15 @@ fn test_actor() {
             );
         }
     }
-    let mut dispatcher = Arc::new(Dispatcher::new());
-    let dispatcher2 = dispatcher.clone();
+    let (system, mut dispatcher) = ActorSystem::create();
     let handle = thread::spawn(move || {
-        loop {
-            //println!("dispatching");
-            dispatcher2.dispatch();
-            //thread::sleep_ms(2);
-        }
+        dispatcher.dispatch();
     });
     let actor = Box::new(MyActor(3));
-    let act = dispatcher.add(actor);
+    let act = system.add(actor);
 
     let actor2 = Box::new(MyActor(2));
-    let act2 = dispatcher.add(actor2);
+    let act2 = system.add(actor2);
 
     for i in 0..10 {
         act.send(i);
