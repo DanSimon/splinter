@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::sync::mpsc::{channel, Sender, Receiver};
 
 
-type ActorId = u64;
+pub type ActorId = u64;
 
 trait UntypedMessage : Send {
     fn as_any<'a>(&'a self) -> &'a Any;
@@ -29,7 +29,7 @@ impl<T: Send  + Any> UntypedMessage for Message<T> {
 
 
 pub trait Actor: Send  {
-    fn receive(&self, t: &Any);
+    fn receive(&mut self, t: &Any);
 }
 
 
@@ -69,6 +69,10 @@ impl ActorRef {
     pub fn send<T: Send  + Any>(&self, t: T) {
         //let ch = self.channel.lock().unwrap();
         self.channel.send(DispatcherMessage::ActorMessage(self.id, Box::new(Message{m: t})));
+    }
+
+    pub fn id(&self) -> ActorId {
+        self.id
     }
 }
 
@@ -177,21 +181,30 @@ macro_rules! receive {
 #[test]
 fn test_actor() {
     struct Ping(ActorRef, i32);
-    struct MyActor(i32);
+    struct MyActor{
+        me: Option<ActorRef>,
+    }
     impl Actor for MyActor {
-        fn receive(&self, message: &Any) {
+        fn receive(&mut self, message: &Any) {
             receive!(message,
+                me: ActorRef => {
+                    self.me = Some(me.clone());
+                },
                 num: i32 => {
                     println!("got {}", num);
                 },
                 p: Ping => {
                     let &Ping(ref sender, ref num) = p;
-                    //let q: Ping = p;
-                    //let Ping(sender, num) = q;
-                    if *num == 500000 {
+                    if *num == 50 {
                         println!("done");
                     } else {
-                        sender.send(Ping(sender.clone(), num + 1));
+                        match self.me {
+                            Some(ref me) => { 
+                                //println!("{} got {}", me.id(), num);
+                                sender.send(Ping(me.clone(), num + 1)); 
+                            },
+                            None => { }
+                        }
                     }
                 }
             );
@@ -201,17 +214,18 @@ fn test_actor() {
     let handle = thread::spawn(move || {
         dispatcher.dispatch();
     });
-    let actor = Box::new(MyActor(3));
+    let actor = Box::new(MyActor{me: None});
     let act = system.add(actor);
+    act.send(act.clone());
 
-    let actor2 = Box::new(MyActor(2));
+    let actor2 = Box::new(MyActor{me: None});
     let act2 = system.add(actor2);
+    act2.send(act2.clone());
 
     for i in 0..10 {
         act.send(i);
     }
     act.send(Ping(act2.clone(), 0));
-    act2.send(act.clone());
 
     thread::sleep_ms(1000);
 
