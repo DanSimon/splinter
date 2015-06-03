@@ -37,13 +37,6 @@ pub struct Context {
     pub sender: ActorRef
 }
 
-impl Context {
-
-    pub fn send<T: Send  + Any>(&self, to: ActorRef, t: T) {
-        to.channel.send(DispatcherMessage::ActorMessage(self.me.clone(), to.id, Box::new(Message{m: t})));
-    }
-}
-
 struct SourcedMessage{
     sender: ActorRef, 
     message: Box<UntypedMessage>
@@ -69,14 +62,10 @@ impl LiveActor {
     }
 
     fn receive_next(&mut self) {
-        let next = self.mailbox.pop_back();
-        match next {
-            Some(m) => {
-                self.context.sender = m.sender;
-                self.actor.receive(&self.context, m.message.as_any());
-            },
-            _ => {}
-        };
+        if let Some(m) = self.mailbox.pop_back() {
+            self.context.sender = m.sender;
+            self.actor.receive(&self.context, m.message.as_any());
+        }
     }
 
     fn enqueue(&mut self, sender: ActorRef, message: Box<UntypedMessage>) {
