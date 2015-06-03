@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::sync::mpsc::{channel, Sender, Receiver};
 
 
-pub type ActorId = u64;
+pub type ActorId = u32;
 
 trait UntypedMessage : Send {
     fn as_any<'a>(&'a self) -> &'a Any;
