@@ -29,70 +29,91 @@ impl<T: Send  + Any> UntypedMessage for Message<T> {
 
 
 pub trait Actor: Send  {
-    fn receive(&mut self, t: &Any);
+    fn receive(&mut self, ctx: &Context, t: &Any);
 }
 
+pub struct Context {
+    pub me: ActorRef,
+    pub sender: ActorRef
+}
+
+impl Context {
+
+    pub fn send<T: Send  + Any>(&self, to: ActorRef, t: T) {
+        to.channel.send(DispatcherMessage::ActorMessage(self.me.clone(), to.id, Box::new(Message{m: t})));
+    }
+}
+
+struct SourcedMessage{
+    sender: ActorRef, 
+    message: Box<UntypedMessage>
+}
+impl SourcedMessage {
+    pub fn new(sender: ActorRef, message: Box<UntypedMessage>) -> Self {
+        SourcedMessage{sender: sender, message: message}
+    }
+}
 
 struct LiveActor {
     actor: Box<Actor>,
-    mailbox: VecDeque<Box<UntypedMessage>>,
+    mailbox: VecDeque<SourcedMessage>,
+    context: Context,
 }
 
 impl LiveActor {
 
-    fn new(actor: Box<Actor>) -> Self {
-        LiveActor{actor: actor, mailbox: VecDeque::new()}
+    fn new(actor: Box<Actor>, me: ActorRef) -> Self {
+        let stupid_sender = me.clone();
+        let ctx = Context{me: me, sender: stupid_sender}; //fix sender
+        LiveActor{actor: actor, mailbox: VecDeque::new(), context: ctx}
     }
 
     fn receive_next(&mut self) {
         let next = self.mailbox.pop_back();
         match next {
-            Some(ref t) => {
-                self.actor.receive(t.as_any());
+            Some(m) => {
+                self.context.sender = m.sender;
+                self.actor.receive(&self.context, m.message.as_any());
             },
-            None => {}
+            _ => {}
         };
     }
 
-    fn enqueue(&mut self, message: Box<UntypedMessage>) {
-        self.mailbox.push_front(message);
+    fn enqueue(&mut self, sender: ActorRef, message: Box<UntypedMessage>) {
+        self.mailbox.push_front(SourcedMessage::new(sender, message));
     }
 
 }
 
+
+#[derive(Clone)]
 pub struct ActorRef {
     id: ActorId,
     channel: Sender<DispatcherMessage>,
 }
 
 impl ActorRef {
-    pub fn send<T: Send  + Any>(&self, t: T) {
-        //let ch = self.channel.lock().unwrap();
-        self.channel.send(DispatcherMessage::ActorMessage(self.id, Box::new(Message{m: t})));
-    }
 
     pub fn id(&self) -> ActorId {
         self.id
     }
-}
 
-impl Clone for ActorRef {
-
-    fn clone(&self) -> Self {
-        //let ch = self.channel.lock().unwrap();
-        ActorRef{id: self.id, channel: self.channel.clone()}
+    pub fn send<T: Send  + Any>(&self, t: T, from: ActorRef) {
+        self.channel.send(DispatcherMessage::ActorMessage(from, self.id, Box::new(Message{m: t})));
     }
 }
 
+
 enum DispatcherMessage {
-    ActorMessage(ActorId, Box<UntypedMessage>),
-    AddActor(ActorId, Box<Actor>),
+    ActorMessage(ActorRef, ActorId, Box<UntypedMessage>),
+    AddActor(ActorRef, Box<Actor>),
     Shutdown,
 }
 
 pub struct ActorSystem {
     next_actor_id: Mutex<ActorId>,
     channel: Sender<DispatcherMessage>,
+    no_sender: ActorRef
 }
 impl ActorSystem {
 
@@ -104,16 +125,19 @@ impl ActorSystem {
     }
 
     fn new(channel: Sender<DispatcherMessage>) -> Self {
-        ActorSystem{next_actor_id: Mutex::new(1), channel: channel}
+        let no_sender = ActorRef{id: 0, channel: channel.clone()};
+        ActorSystem{next_actor_id: Mutex::new(1), channel: channel, no_sender: no_sender}
     }
 
     pub fn add(&self, actor: Box<Actor>) -> ActorRef {
         let mut next_id = self.next_actor_id.lock().unwrap();
         let id = *next_id;
         *next_id += 1;
-        self.channel.send(DispatcherMessage::AddActor(id, actor));
-        ActorRef{id: id, channel: self.channel.clone()}
+        let aref = ActorRef{id: id, channel: self.channel.clone()};
+        self.channel.send(DispatcherMessage::AddActor(aref.clone(), actor));
+        aref
     }
+
 }
 
 pub struct Dispatcher {
@@ -138,13 +162,14 @@ impl Dispatcher {
             while r.is_ok() {
                 let message = r.unwrap();
                 match message {
-                    DispatcherMessage::ActorMessage(id, m) => {
+                    DispatcherMessage::ActorMessage(from, id, m) => {
                         if let Some(live) = self.actors.get_mut(&id) {
-                            live.enqueue(m);
+                            live.enqueue(from, m);
                         }
                     },
-                    DispatcherMessage::AddActor(id, actor) => {
-                        let live = LiveActor::new(actor);
+                    DispatcherMessage::AddActor(aref, actor) => {
+                        let id = aref.id;
+                        let live = LiveActor::new(actor, aref);
                         self.actors.insert(id, live);
                     },
                     DispatcherMessage::Shutdown => {
@@ -185,26 +210,13 @@ fn test_actor() {
         me: Option<ActorRef>,
     }
     impl Actor for MyActor {
-        fn receive(&mut self, message: &Any) {
+        fn receive(&mut self, ctx: &Context, message: &Any) {
             receive!(message,
-                me: ActorRef => {
-                    self.me = Some(me.clone());
-                },
                 num: i32 => {
-                    println!("got {}", num);
-                },
-                p: Ping => {
-                    let &Ping(ref sender, ref num) = p;
                     if *num == 50 {
                         println!("done");
                     } else {
-                        match self.me {
-                            Some(ref me) => { 
-                                //println!("{} got {}", me.id(), num);
-                                sender.send(Ping(me.clone(), num + 1)); 
-                            },
-                            None => { }
-                        }
+                        ctx.send(ctx.sender.clone(), num + 1);
                     }
                 }
             );
@@ -216,16 +228,11 @@ fn test_actor() {
     });
     let actor = Box::new(MyActor{me: None});
     let act = system.add(actor);
-    act.send(act.clone());
 
     let actor2 = Box::new(MyActor{me: None});
     let act2 = system.add(actor2);
-    act2.send(act2.clone());
 
-    for i in 0..10 {
-        act.send(i);
-    }
-    act.send(Ping(act2.clone(), 0));
+    act.send(0, act2);
 
     thread::sleep_ms(1000);
 
