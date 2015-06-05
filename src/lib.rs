@@ -211,9 +211,6 @@ impl Dispatcher {
 
 }
 
-trait Foo: Send {}
-impl Foo for i32 {}
-
 #[macro_export]
 macro_rules! receive {
     ($ide:ident, $i:ident : $t:ty => $b:block, $($rest:tt)*) => { match $ide.downcast_ref::<$t>() {
@@ -230,9 +227,7 @@ macro_rules! receive {
 #[test]
 fn test_actor() {
     struct Ping(ActorRef, i32);
-    struct MyActor{
-        me: Option<ActorRef>,
-    }
+    struct MyActor;
     impl Actor for MyActor {
         fn receive(&mut self, ctx: &Context, message: &Any) {
             receive!(message,
@@ -252,10 +247,10 @@ fn test_actor() {
         dispatcher.dispatch();
     });
     
-    let actor = Box::new(MyActor{me: None});
+    let actor = Box::new(MyActor);
     let act = system.add(actor);
 
-    let actor2 = Box::new(MyActor{me: None});
+    let actor2 = Box::new(MyActor);
     let act2 = system.add(actor2);
 
     act.send(0, act2);
