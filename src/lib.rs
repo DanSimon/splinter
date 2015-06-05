@@ -4,11 +4,16 @@ use std::any::Any;
 use std::collections::{VecDeque, HashMap};
 use std::collections::hash_map::RandomState;
 use std::thread;
+use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::mpsc::{channel, Sender, Receiver};
 
-
 pub type ActorId = u32;
+type DispatcherId = u16;
+type DSender = Sender<DispatcherMessage>;
+
+thread_local!(static SENDERS: RefCell<HashMap<DispatcherId, DSender, RandomState>> = RefCell::new(HashMap::new()));
+
 
 trait UntypedMessage : Send {
     fn as_any<'a>(&'a self) -> &'a Any;
@@ -78,7 +83,7 @@ impl LiveActor {
 #[derive(Clone)]
 pub struct ActorRef {
     id: ActorId,
-    channel: Sender<DispatcherMessage>,
+    dispatcher_id: DispatcherId,
 }
 
 impl ActorRef {
@@ -88,18 +93,28 @@ impl ActorRef {
     }
 
     pub fn send<T: Send  + Any>(&self, t: T, from: ActorRef) {
-        self.channel.send(DispatcherMessage::ActorMessage(from, self.id, Box::new(Message{m: t})));
+        SENDERS.with(|refcell| {
+            let senders = refcell.borrow();
+            if let Some(channel) = senders.get(&self.dispatcher_id) {
+                channel.send(DispatcherMessage::ActorMessage(from, self.id, Box::new(Message{m: t})));
+            } else {
+                panic!("No Dispatcher");
+            }
+        });
     }
+
 }
 
 
 enum DispatcherMessage {
     ActorMessage(ActorRef, ActorId, Box<UntypedMessage>),
     AddActor(ActorRef, Box<Actor>),
+    AddDispatcher(DispatcherId, Sender<DispatcherMessage>),
     Shutdown,
 }
 
 pub struct ActorSystem {
+    dispatcher_id: DispatcherId,
     next_actor_id: Mutex<ActorId>,
     channel: Sender<DispatcherMessage>,
     no_sender: ActorRef
@@ -108,23 +123,37 @@ impl ActorSystem {
 
     pub fn create() -> (ActorSystem, Dispatcher) {
         let (s,r) = channel();
-        let system = ActorSystem::new(s);
+        let system = ActorSystem::new(s.clone());
         let dispatcher = Dispatcher::new(r);
+        SENDERS.with(|refcell| {
+            let mut senders = refcell.borrow_mut();
+            senders.insert(system.dispatcher_id, s)
+        });
         (system, dispatcher)
     }
 
     fn new(channel: Sender<DispatcherMessage>) -> Self {
-        let no_sender = ActorRef{id: 0, channel: channel.clone()};
-        ActorSystem{next_actor_id: Mutex::new(1), channel: channel, no_sender: no_sender}
+        let no_sender = ActorRef{id: 0, dispatcher_id: 1};
+        ActorSystem{
+            next_actor_id: Mutex::new(1), 
+            channel: channel, 
+            no_sender: no_sender,
+            dispatcher_id: 1,
+        }
     }
 
     pub fn add(&self, actor: Box<Actor>) -> ActorRef {
         let mut next_id = self.next_actor_id.lock().unwrap();
         let id = *next_id;
         *next_id += 1;
-        let aref = ActorRef{id: id, channel: self.channel.clone()};
+        let aref = ActorRef{id: id, dispatcher_id: self.dispatcher_id};
         self.channel.send(DispatcherMessage::AddActor(aref.clone(), actor));
         aref
+    }
+
+    pub fn init_dispatcher(&self) {
+        let s = self.channel.clone();
+        self.channel.send(DispatcherMessage::AddDispatcher(self.dispatcher_id, s));
     }
 
 }
@@ -163,6 +192,12 @@ impl Dispatcher {
                     },
                     DispatcherMessage::Shutdown => {
                         return;
+                    },
+                    DispatcherMessage::AddDispatcher(id, sender) => {
+                        SENDERS.with(|refcell| {
+                            let mut senders = refcell.borrow_mut();
+                            senders.insert(id, sender)
+                        });
                     }
                 }
                 r = self.receiver.try_recv();
@@ -202,19 +237,22 @@ fn test_actor() {
         fn receive(&mut self, ctx: &Context, message: &Any) {
             receive!(message,
                 num: i32 => {
+                    println!("receiving");
                     if *num == 50 {
                         println!("done");
                     } else {
-                        ctx.send(ctx.sender.clone(), num + 1);
+                        ctx.me.send(num + 1, ctx.me.clone());
                     }
                 }
             );
         }
     }
     let (system, mut dispatcher) = ActorSystem::create();
+    system.init_dispatcher();
     let handle = thread::spawn(move || {
         dispatcher.dispatch();
     });
+    
     let actor = Box::new(MyActor{me: None});
     let act = system.add(actor);
 
