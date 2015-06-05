@@ -80,7 +80,7 @@ impl LiveActor {
 }
 
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct ActorRef {
     id: ActorId,
     dispatcher_id: DispatcherId,
@@ -237,11 +237,10 @@ fn test_actor() {
         fn receive(&mut self, ctx: &Context, message: &Any) {
             receive!(message,
                 num: i32 => {
-                    println!("receiving");
                     if *num == 50 {
                         println!("done");
                     } else {
-                        ctx.me.send(num + 1, ctx.me.clone());
+                        ctx.me.send(num + 1, ctx.me);
                     }
                 }
             );
