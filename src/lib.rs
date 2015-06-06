@@ -120,7 +120,7 @@ impl ActorSystem {
         let mut dispatchers = Vec::new();
         for dispatcher_id in 0..threads {
             let (s,r) = channel();
-            let mut dispatcher = Dispatcher::new(r);
+            let mut dispatcher = Dispatcher::new(dispatcher_id, r);
             let thread = thread::spawn(move || {
                 dispatcher.dispatch();
                 1 //arbitrary
@@ -157,7 +157,6 @@ impl ActorSystem {
         //round robin dispatchers for now
         let pos: usize = (id % self.dispatchers.len() as u32) as usize;
         let ref dispatcher = self.dispatchers[pos];
-        println!("assigning {}", dispatcher.id);
         let aref = ActorRef{id: id, dispatcher_id: dispatcher.id};
         dispatcher.sender.send(DispatcherMessage::AddActor(aref, actor));
         aref
@@ -178,27 +177,39 @@ struct DispatcherHandle {
 }
 
 struct Dispatcher {
+    id: DispatcherId,
     receiver: Receiver<DispatcherMessage>,
     actors: HashMap<ActorId, LiveActor, RandomState>,
 }
 
+// this is a super hacky hack.  Parking a thread seems to be a very expensive operation, so ideally
+// we only want to do this after a certain number of busy loops with nothing to do
+static BUSY_LOOPS:usize = 1000;
+
 impl Dispatcher {
 
 
-    fn new(receiver: Receiver<DispatcherMessage>) -> Self {
+    fn new(id: DispatcherId, receiver: Receiver<DispatcherMessage>) -> Self {
         Dispatcher{
+            id: id,
             receiver: receiver,
             actors: HashMap::new()
         }
     }
 
-
+    
     fn dispatch(&mut self) {
+        let mut loops_till_park = BUSY_LOOPS;
         loop {
-            let mut r: Result<DispatcherMessage, TryRecvError> = self.receiver.try_recv();
-            //let mut r: Result<DispatcherMessage, TryRecvError> = Ok(self.receiver.recv().unwrap());
-            while r.is_ok() {
-                let message = r.unwrap();
+            let r: Result<DispatcherMessage, TryRecvError> = if loops_till_park == 0 {
+                loops_till_park = BUSY_LOOPS;
+                println!("{} parking", self.id);
+                Ok(self.receiver.recv().unwrap())
+            } else {
+                self.receiver.try_recv()
+            };
+            if let Ok(message) = r {
+                loops_till_park = BUSY_LOOPS;
                 match message {
                     DispatcherMessage::ActorMessage(from, id, m) => {
                         if let Some(live) = self.actors.get_mut(&id) {
@@ -219,8 +230,9 @@ impl Dispatcher {
                             senders.insert(id, sender)
                         });
                     }
-                }
-                r = self.receiver.try_recv();
+                };
+            } else {
+                loops_till_park -= 1;
             }
         }
     }
