@@ -6,7 +6,7 @@ use std::collections::hash_map::RandomState;
 use std::thread;
 use std::cell::RefCell;
 use std::sync::Mutex;
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::mpsc::{channel, Sender, Receiver, TryRecvError};
 
 pub type ActorId = u32;
 type DispatcherId = u16;
@@ -202,7 +202,7 @@ impl Dispatcher {
 
     fn dispatch(&mut self) {
         loop {
-            let mut r = self.receiver.try_recv();
+            let mut r: Result<DispatcherMessage, TryRecvError> = Ok(self.receiver.recv().unwrap());
             while r.is_ok() {
                 let message = r.unwrap();
                 match message {
