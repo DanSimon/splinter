@@ -49,6 +49,18 @@ pub struct Context<'a> {
     pub sender: &'a ActorRef
 }
 
+impl<'a> Context<'a> {
+
+    pub fn shutdown_system(&self) {
+        SENDERS.with(|s| {
+            let senders = s.borrow();
+            for (_, sender) in senders.iter() {
+                sender.send(DispatcherMessage::Shutdown);
+            }
+        });
+    }
+}
+
 struct LiveActor {
     actor: Box<Actor>,
     me: ActorRef,
@@ -260,6 +272,7 @@ fn test_actor() {
                     println!("{:?} got {}", ctx.me, num);
                     if *num == 50 {
                         println!("done");
+                        ctx.shutdown_system();
                     } else {
                         ctx.sender.send(num + 1, *ctx.me);
                     }
@@ -277,7 +290,7 @@ fn test_actor() {
 
     act.send(0, act2);
 
-    thread::sleep_ms(1000);
+    system.join();
 
 }
 
