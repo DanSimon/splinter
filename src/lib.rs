@@ -120,7 +120,7 @@ pub struct ActorSystem {
 }
 impl ActorSystem {
 
-    fn new() -> Self {
+    pub fn new() -> Self {
         let dispatcher_id = 1; //TODO, eventually have multiple dispatchers
         let (s,r) = channel();
         let mut dispatcher = Dispatcher::new(r);
