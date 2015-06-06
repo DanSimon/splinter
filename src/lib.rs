@@ -54,7 +54,6 @@ impl SourcedMessage {
 
 struct LiveActor {
     actor: Box<Actor>,
-    mailbox: VecDeque<SourcedMessage>,
     context: Context,
 }
 
@@ -63,18 +62,12 @@ impl LiveActor {
     fn new(actor: Box<Actor>, me: ActorRef) -> Self {
         let stupid_sender = me.clone();
         let ctx = Context{me: me, sender: stupid_sender}; //fix sender
-        LiveActor{actor: actor, mailbox: VecDeque::new(), context: ctx}
-    }
-
-    fn receive_next(&mut self) {
-        if let Some(m) = self.mailbox.pop_back() {
-            self.context.sender = m.sender;
-            self.actor.receive(&self.context, m.message.as_any());
-        }
+        LiveActor{actor: actor, context: ctx}
     }
 
     fn enqueue(&mut self, sender: ActorRef, message: Box<UntypedMessage>) {
-        self.mailbox.push_front(SourcedMessage::new(sender, message));
+        self.context.sender = sender;
+        self.actor.receive(&self.context, message.as_any());
     }
 
 }
@@ -227,9 +220,6 @@ impl Dispatcher {
                     }
                 }
                 r = self.receiver.try_recv();
-            }
-            for (_ ,actor) in self.actors.iter_mut() {
-                actor.receive_next();
             }
         }
     }
