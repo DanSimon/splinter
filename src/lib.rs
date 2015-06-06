@@ -195,7 +195,8 @@ impl Dispatcher {
 
     fn dispatch(&mut self) {
         loop {
-            let mut r: Result<DispatcherMessage, TryRecvError> = Ok(self.receiver.recv().unwrap());
+            let mut r: Result<DispatcherMessage, TryRecvError> = self.receiver.try_recv();
+            //let mut r: Result<DispatcherMessage, TryRecvError> = Ok(self.receiver.recv().unwrap());
             while r.is_ok() {
                 let message = r.unwrap();
                 match message {
