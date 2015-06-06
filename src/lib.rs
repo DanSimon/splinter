@@ -114,31 +114,37 @@ enum DispatcherMessage {
 }
 
 pub struct ActorSystem {
-    dispatcher_id: DispatcherId,
+    dispatcher: DispatcherHandle,
     next_actor_id: Mutex<ActorId>,
-    channel: Sender<DispatcherMessage>,
     no_sender: ActorRef
 }
 impl ActorSystem {
 
-    pub fn create() -> (ActorSystem, Dispatcher) {
+    fn new() -> Self {
+        let dispatcher_id = 1; //TODO, eventually have multiple dispatchers
         let (s,r) = channel();
-        let system = ActorSystem::new(s.clone());
-        let dispatcher = Dispatcher::new(r);
+        let mut dispatcher = Dispatcher::new(r);
+        let s_clone = s.clone();
+        s.send(DispatcherMessage::AddDispatcher(dispatcher_id, s_clone));
+        let thread = thread::spawn(move || {
+            dispatcher.dispatch();
+            1
+        });
+
+        let handle = DispatcherHandle{
+            id: dispatcher_id,
+            sender: s.clone(), //probably not needed
+            thread: thread,
+        };
         SENDERS.with(|refcell| {
             let mut senders = refcell.borrow_mut();
-            senders.insert(system.dispatcher_id, s)
+            senders.insert(dispatcher_id, s)
         });
-        (system, dispatcher)
-    }
-
-    fn new(channel: Sender<DispatcherMessage>) -> Self {
-        let no_sender = ActorRef{id: 0, dispatcher_id: 1};
+        
         ActorSystem{
             next_actor_id: Mutex::new(1), 
-            channel: channel, 
-            no_sender: no_sender,
-            dispatcher_id: 1,
+            no_sender: ActorRef{id: 0, dispatcher_id: dispatcher_id},
+            dispatcher: handle,
         }
     }
 
@@ -146,19 +152,24 @@ impl ActorSystem {
         let mut next_id = self.next_actor_id.lock().unwrap();
         let id = *next_id;
         *next_id += 1;
-        let aref = ActorRef{id: id, dispatcher_id: self.dispatcher_id};
-        self.channel.send(DispatcherMessage::AddActor(aref.clone(), actor));
+        let aref = ActorRef{id: id, dispatcher_id: self.dispatcher.id};
+        self.dispatcher.sender.send(DispatcherMessage::AddActor(aref.clone(), actor));
         aref
     }
 
-    pub fn init_dispatcher(&self) {
-        let s = self.channel.clone();
-        self.channel.send(DispatcherMessage::AddDispatcher(self.dispatcher_id, s));
+    pub fn join(self) {
+        self.dispatcher.thread.join();
     }
 
 }
 
-pub struct Dispatcher {
+struct DispatcherHandle {
+    id: DispatcherId,
+    sender: Sender<DispatcherMessage>,
+    thread: thread::JoinHandle<i32>,
+}
+
+struct Dispatcher {
     receiver: Receiver<DispatcherMessage>,
     actors: HashMap<ActorId, LiveActor, RandomState>,
 }
@@ -174,7 +185,7 @@ impl Dispatcher {
     }
 
 
-    pub fn dispatch(&mut self) {
+    fn dispatch(&mut self) {
         loop {
             let mut r = self.receiver.try_recv();
             while r.is_ok() {
@@ -241,11 +252,7 @@ fn test_actor() {
             );
         }
     }
-    let (system, mut dispatcher) = ActorSystem::create();
-    system.init_dispatcher();
-    let handle = thread::spawn(move || {
-        dispatcher.dispatch();
-    });
+    let system = ActorSystem::new();
     
     let actor = Box::new(MyActor);
     let act = system.add(actor);
