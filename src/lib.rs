@@ -12,15 +12,22 @@ pub type ActorId = u32;
 type DispatcherId = u16;
 type DSender = Sender<DispatcherMessage>;
 
+// We're using thread-local storage to store exactly one copy of each dispatcher's sender.  When
+// sending messages to actors, the ActorRef looks up its dispatcher's sender.  We do this instead
+// of giving the ActorRef a copy of the sender for 2 reasons:
+// 1 - A single u16 takes up less space than a Sender, and we're copying ActorRef's like crazy
+// 2 - Cloning Senders is sloooooooow (and they don't implement Copy)
 thread_local!(static SENDERS: RefCell<HashMap<DispatcherId, DSender, RandomState>> = RefCell::new(HashMap::new()));
 
 
+// UntypedMessage trait objects are what are actually sent as an actor message.  This appears to be
+// the simplest way to send arbitrary values.
 trait UntypedMessage : Send {
     fn as_any<'a>(&'a self) -> &'a Any;
 }
 
-/// Because the Any type cannot be sent across threads, we need to wrap the actual message in a
-/// struct, send that, and then do the conversion to &Any afterwards
+// Because the Any type cannot be sent across threads, we need to wrap the actual message in a
+// struct, send that, and then do the conversion to &Any afterwards
 struct Message<T: Send  + Any> {
     m: T
 }
@@ -34,40 +41,27 @@ impl<T: Send  + Any> UntypedMessage for Message<T> {
 
 
 pub trait Actor: Send  {
-    fn receive(&mut self, ctx: &Context, t: &Any);
+    fn receive(&mut self, ctx: Context, t: &Any);
 }
 
-pub struct Context {
-    pub me: ActorRef,
-    pub sender: ActorRef
-}
-
-struct SourcedMessage{
-    sender: ActorRef, 
-    message: Box<UntypedMessage>
-}
-impl SourcedMessage {
-    pub fn new(sender: ActorRef, message: Box<UntypedMessage>) -> Self {
-        SourcedMessage{sender: sender, message: message}
-    }
+pub struct Context<'a> {
+    pub me: &'a ActorRef,
+    pub sender: &'a ActorRef
 }
 
 struct LiveActor {
     actor: Box<Actor>,
-    context: Context,
+    me: ActorRef,
 }
 
 impl LiveActor {
 
     fn new(actor: Box<Actor>, me: ActorRef) -> Self {
-        let stupid_sender = me.clone();
-        let ctx = Context{me: me, sender: stupid_sender}; //fix sender
-        LiveActor{actor: actor, context: ctx}
+        LiveActor{actor: actor, me:me}
     }
 
     fn enqueue(&mut self, sender: ActorRef, message: Box<UntypedMessage>) {
-        self.context.sender = sender;
-        self.actor.receive(&self.context, message.as_any());
+        self.actor.receive(Context{sender: &sender, me: &self.me}, message.as_any());
     }
 
 }
@@ -184,6 +178,8 @@ struct Dispatcher {
 
 // this is a super hacky hack.  Parking a thread seems to be a very expensive operation, so ideally
 // we only want to do this after a certain number of busy loops with nothing to do
+// Obviously we're going to need something a lot smarter here, probably some kind of fork/join
+// work-stealing thing
 static BUSY_LOOPS:usize = 1000;
 
 impl Dispatcher {
@@ -203,7 +199,7 @@ impl Dispatcher {
         loop {
             let r: Result<DispatcherMessage, TryRecvError> = if loops_till_park == 0 {
                 loops_till_park = BUSY_LOOPS;
-                println!("{} parking", self.id);
+                //println!("{} parking", self.id);
                 Ok(self.receiver.recv().unwrap())
             } else {
                 self.receiver.try_recv()
@@ -258,14 +254,14 @@ fn test_actor() {
     struct Ping(ActorRef, i32);
     struct MyActor;
     impl Actor for MyActor {
-        fn receive(&mut self, ctx: &Context, message: &Any) {
+        fn receive(&mut self, ctx: Context, message: &Any) {
             receive!(message,
                 num: i32 => {
                     println!("{:?} got {}", ctx.me, num);
                     if *num == 50 {
                         println!("done");
                     } else {
-                        ctx.sender.send(num + 1, ctx.me);
+                        ctx.sender.send(num + 1, *ctx.me);
                     }
                 }
             );
