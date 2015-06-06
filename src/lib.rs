@@ -80,7 +80,7 @@ impl LiveActor {
 }
 
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ActorRef {
     id: ActorId,
     dispatcher_id: DispatcherId,
@@ -114,37 +114,46 @@ enum DispatcherMessage {
 }
 
 pub struct ActorSystem {
-    dispatcher: DispatcherHandle,
+    dispatchers: Vec<DispatcherHandle>,
     next_actor_id: Mutex<ActorId>,
     no_sender: ActorRef
 }
 impl ActorSystem {
 
-    pub fn new() -> Self {
-        let dispatcher_id = 1; //TODO, eventually have multiple dispatchers
-        let (s,r) = channel();
-        let mut dispatcher = Dispatcher::new(r);
-        let s_clone = s.clone();
-        s.send(DispatcherMessage::AddDispatcher(dispatcher_id, s_clone));
-        let thread = thread::spawn(move || {
-            dispatcher.dispatch();
-            1
-        });
+    pub fn new(threads: u16) -> Self {
+        if threads == 0 {
+            panic!("need at least one thread for actorsystem");
+        }
+        let mut dispatchers = Vec::new();
+        for dispatcher_id in 0..threads {
+            let (s,r) = channel();
+            let mut dispatcher = Dispatcher::new(r);
+            let thread = thread::spawn(move || {
+                dispatcher.dispatch();
+                1 //arbitrary
+            });
 
-        let handle = DispatcherHandle{
-            id: dispatcher_id,
-            sender: s.clone(), //probably not needed
-            thread: thread,
-        };
-        SENDERS.with(|refcell| {
-            let mut senders = refcell.borrow_mut();
-            senders.insert(dispatcher_id, s)
-        });
-        
+            let handle = DispatcherHandle{
+                id: dispatcher_id,
+                sender: s.clone(), //probably not needed
+                thread: thread,
+            };
+            SENDERS.with(|refcell| {
+                let mut senders = refcell.borrow_mut();
+                senders.insert(dispatcher_id, s)
+            });
+            dispatchers.push(handle);
+        }        
+        //all the dispatchers need to add each other (and themselves) to their thread-local-storage
+        for source in dispatchers.iter() {
+            for target in dispatchers.iter() {
+                source.sender.send(DispatcherMessage::AddDispatcher(target.id, target.sender.clone()));
+            }
+        }
         ActorSystem{
             next_actor_id: Mutex::new(1), 
-            no_sender: ActorRef{id: 0, dispatcher_id: dispatcher_id},
-            dispatcher: handle,
+            no_sender: ActorRef{id: 0, dispatcher_id: 1}, //this should be something else
+            dispatchers: dispatchers,
         }
     }
 
@@ -152,13 +161,19 @@ impl ActorSystem {
         let mut next_id = self.next_actor_id.lock().unwrap();
         let id = *next_id;
         *next_id += 1;
-        let aref = ActorRef{id: id, dispatcher_id: self.dispatcher.id};
-        self.dispatcher.sender.send(DispatcherMessage::AddActor(aref.clone(), actor));
+        //round robin dispatchers for now
+        let pos: usize = (id % self.dispatchers.len() as u32) as usize;
+        let ref dispatcher = self.dispatchers[pos];
+        println!("assigning {}", dispatcher.id);
+        let aref = ActorRef{id: id, dispatcher_id: dispatcher.id};
+        dispatcher.sender.send(DispatcherMessage::AddActor(aref, actor));
         aref
     }
 
-    pub fn join(self) {
-        self.dispatcher.thread.join();
+    pub fn join(mut self) {
+        while let Some(handle) = self.dispatchers.pop() {
+            handle.thread.join();
+        }
     }
 
 }
@@ -243,16 +258,17 @@ fn test_actor() {
         fn receive(&mut self, ctx: &Context, message: &Any) {
             receive!(message,
                 num: i32 => {
+                    println!("{:?} got {}", ctx.me, num);
                     if *num == 50 {
                         println!("done");
                     } else {
-                        ctx.me.send(num + 1, ctx.me);
+                        ctx.sender.send(num + 1, ctx.me);
                     }
                 }
             );
         }
     }
-    let system = ActorSystem::new();
+    let system = ActorSystem::new(4);
     
     let actor = Box::new(MyActor);
     let act = system.add(actor);
