@@ -42,6 +42,10 @@ impl<T: Send  + Any> UntypedMessage for Message<T> {
 
 pub trait Actor: Send  {
     fn receive(&mut self, ctx: Context, t: &Any);
+
+    fn pre_start(&mut self, ctx: Context) {}
+
+    fn post_stop(&mut self, ctx: Context) {}
 }
 
 pub struct Context<'a> {
@@ -59,6 +63,12 @@ impl<'a> Context<'a> {
             }
         });
     }
+
+    pub fn stop(actor: ActorRef) {
+        actor.send_internal(DispatcherMessage::Stop(actor.id));
+    }
+
+    //pub fn spawn(child: Actor)
 }
 
 struct LiveActor {
@@ -74,6 +84,13 @@ impl LiveActor {
 
     fn enqueue(&mut self, sender: ActorRef, message: Box<UntypedMessage>) {
         self.actor.receive(Context{sender: &sender, me: &self.me}, message.as_any());
+    }
+
+    fn pre_start(&mut self) {
+        self.actor.pre_start(Context{sender: &self.me, me: &self.me});
+    }
+    fn post_stop(&mut self) {
+        self.actor.post_stop(Context{sender: &self.me, me: &self.me});
     }
 
 }
@@ -92,14 +109,19 @@ impl ActorRef {
     }
 
     pub fn send<T: Send  + Any>(&self, t: T, from: ActorRef) {
+        self.send_internal(DispatcherMessage::ActorMessage(from, self.id, Box::new(Message{m: t})));
+    }
+
+    fn send_internal(&self, m: DispatcherMessage) {
         SENDERS.with(|refcell| {
             let senders = refcell.borrow();
             if let Some(channel) = senders.get(&self.dispatcher_id) {
-                channel.send(DispatcherMessage::ActorMessage(from, self.id, Box::new(Message{m: t})));
+                channel.send(m);
             } else {
                 panic!("No Dispatcher");
             }
         });
+
     }
 
 }
@@ -108,6 +130,7 @@ impl ActorRef {
 enum DispatcherMessage {
     ActorMessage(ActorRef, ActorId, Box<UntypedMessage>),
     AddActor(ActorRef, Box<Actor>),
+    Stop(ActorId),
     AddDispatcher(DispatcherId, Sender<DispatcherMessage>),
     Shutdown,
 }
@@ -226,10 +249,19 @@ impl Dispatcher {
                     },
                     DispatcherMessage::AddActor(aref, actor) => {
                         let id = aref.id;
-                        let live = LiveActor::new(actor, aref);
+                        let mut live = LiveActor::new(actor, aref);
+                        live.pre_start();
                         self.actors.insert(id, live);
                     },
+                    DispatcherMessage::Stop(id) => {
+                        if let Some(mut live) = self.actors.remove(&id) {
+                            live.post_stop();
+                        }
+                    },
                     DispatcherMessage::Shutdown => {
+                        for (_, actor) in self.actors.iter_mut() {
+                            actor.post_stop();
+                        }
                         return;
                     },
                     DispatcherMessage::AddDispatcher(id, sender) => {
@@ -269,7 +301,6 @@ fn test_actor() {
         fn receive(&mut self, ctx: Context, message: &Any) {
             receive!(message,
                 num: i32 => {
-                    println!("{:?} got {}", ctx.me, num);
                     if *num == 50 {
                         println!("done");
                         ctx.shutdown_system();
