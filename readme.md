@@ -125,4 +125,4 @@ pathetic right now due to my very naive scheduler.
 * Add the ability for actors to create children actors
 * "become" semantics
 * Actor supervision, probably have `receive` return a Result since Rust doesn't have exceptions
-* Better lifecycle management, Start/stop hooks
+* Better lifecycle management, deathwatches
