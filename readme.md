@@ -4,10 +4,11 @@ Splinter is an actor library for Rust.  It aims to provide a fast, safe, and int
 
 **WARNING: This project is in the very early stages of development and is very unstable!!**
 
-An **Actor** is a type that receives messages either from other actors or from
-the outside.  A single actor is essentially single-threaded; it always
-processes messages one at a time.  Actors behave like state machines, changing
-their internal state in response to received messages.
+An actor is an object with an inbox that can receive messages.  Messages are
+sent to the actor asynchronously and the actor dequeues and processes messages
+in its inbox one at a time.  Actors are non-blocking, meaning that when an
+actor's inbox is empty and it's not doing anything, no threads are blocked.
+Thus actors provide a nice way to acheive lightweight concurrency.
 
 This project is heavily inspired by the Scala actor library
 [Akka](http://akka.io).
@@ -15,7 +16,7 @@ This project is heavily inspired by the Scala actor library
 Features:
   * Actors are untyped
   * Actors are lightweight (approx 10 million per GB of memory)
-  * Millions of actors can share a single OS thread
+  * Millions of actors can share a single thread
 
 
 
@@ -76,7 +77,7 @@ impl Actor for Forwarder {
     }
 }
 fn forward() {
-    let system = ActorSystem::new(1);
+    let system = ActorSystem::new(4);
     let mut n = system.add(Box::new(Forwarder{next: None}));
     for i in 0..1000000 {
         n = system.add(Box::new(Forwarder{next: Some(n)}));
@@ -86,15 +87,18 @@ fn forward() {
     system.join();
 }
 ```
-This one takes about a second to run (on one thread, don't try it yet on more than 2 ....)
 
 ## Notes
 
 This whole thing is pretty experimental.  It certainly warrents to ask whether
 the Actor model even makes sense to implement in Rust, as some of the benefits
 of actors (safely sharing data, writing fault-tolerant code) are handled much
-better by Rust than other languages.  
+better by Rust than other languages.
 
+Sending a message to an actor from any thread besides the main thread or
+threads created by the ActorSystem won't work right now.  This is because
+thread-local storage is used to hold the channel sender for the actor (this is
+done because cloning Senders is very slow)
 
 The name Splinter is inspired by Matthew Mather's [The Atopia
 Chronicles](http://amzn.com/B00DUK1RKY), where people can create splinters of
@@ -102,26 +106,16 @@ their consciousness to multitask.  Good read, check it out.
 
 ### Performance
 
-Splinter is pretty fast, but leaves much to be desired.  In fact,
-right now it is basically on par with Akka, as the above examples re-written in
-Scala take almost the exact same amount of time, actually the forwarder example
-is *much* faster in Scala when more than 2 threads are used.  On the other
-hand, creating a million actors takes way longer in Akka than Splinter, though
-that's probably an unfair comparison because Akka is way more full-featured. 
+The message dispatcher right now is extremely naive.  Actors are basically
+pinned to threads, so it's possible to get bottlenecked on one thread, though
+in practice I've found it actually works pretty well.  Two actors colocated on
+the same thread can send messages to each other at a very high rate (this is
+because the underlying channel never blocks or busy-waits).
 
-Sending a message involves boxing it into a trait object, converting it to an
-&Any, and then downcasting it again.  This may sound inefficient, but at least
-right now all of the bottlenecks seem to be around channels, not
-boxing/casting.  I did some tests duplicating the same semantics with just
-channels sending integers and am convinced the boxing/Any overhead is trivial.
-
-Right now actors are round-robin'd across threads and there is no rebalancing
-or work-stealing.  Not surprisingly, performance among multiple threads is
-pathetic right now due to my very naive scheduler.
 
 ### Upcoming Improvements
 
-* Fix the scheduler!
+* Fix the dispatcher
 * Add the ability for actors to create children actors
 * "become" semantics
 * Actor supervision, probably have `receive` return a Result since Rust doesn't have exceptions

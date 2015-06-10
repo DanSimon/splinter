@@ -1,8 +1,6 @@
-#![feature(std_misc)]
 
 use std::any::Any;
-use std::collections::{VecDeque, HashMap};
-use std::collections::hash_map::RandomState;
+use std::collections::HashMap;
 use std::thread;
 use std::cell::RefCell;
 use std::sync::Mutex;
@@ -17,7 +15,7 @@ type DSender = Sender<DispatcherMessage>;
 // of giving the ActorRef a copy of the sender for 2 reasons:
 // 1 - A single u16 takes up less space than a Sender, and we're copying ActorRef's like crazy
 // 2 - Cloning Senders is sloooooooow (and they don't implement Copy)
-thread_local!(static SENDERS: RefCell<HashMap<DispatcherId, DSender, RandomState>> = RefCell::new(HashMap::new()));
+thread_local!(static SENDERS: RefCell<HashMap<DispatcherId, DSender>> = RefCell::new(HashMap::new()));
 
 
 // UntypedMessage trait objects are what are actually sent as an actor message.  This appears to be
@@ -208,7 +206,7 @@ struct DispatcherHandle {
 struct Dispatcher {
     id: DispatcherId,
     receiver: Receiver<DispatcherMessage>,
-    actors: HashMap<ActorId, LiveActor, RandomState>,
+    actors: HashMap<ActorId, LiveActor>,
 }
 
 // this is a super hacky hack.  Parking a thread seems to be a very expensive operation, so ideally
